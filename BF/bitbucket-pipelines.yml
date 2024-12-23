@@ -1,0 +1,77 @@
+# You can specify a custom docker image from Docker Hub as your build environment.
+image:
+  name: salesforce/cli:latest-full
+
+# Clone configuration
+clone:
+  depth: full  # SonarCloud scanner needs the full history to assign issues properly
+
+# Definitions for SonarCloud caching and steps
+definitions:
+  caches:
+    sonar: ~/.sonar/cache  # Caching SonarCloud artifacts to speed up your build
+
+  steps:
+    # Build, test and analyze on SonarCloud
+    - step: &build-test-sonarcloud
+        name: Build, test and analyze on SonarCloud
+        caches:
+          - sonar  # Use the SonarCloud cache to speed up the pipeline
+        script:
+          - sf --version
+          - sf plugins --core
+          - pipe: sonarsource/sonarcloud-scan:2.0.0  # This will run SonarCloud analysis
+
+    # Check the Quality Gate on SonarCloud
+    - step: &check-quality-gate-sonarcloud
+        name: Check the Quality Gate on SonarCloud
+        script:
+          - pipe: sonarsource/sonarcloud-quality-gate:0.1.6  # This checks if the SonarCloud quality gate is passed
+
+    # Deploy to Salesforce org (after SonarCloud analysis)
+    - step: &deploy-to-salesforce
+        name: Deploy to Salesforce Org
+        script:
+          - export TESTLEVEL=NoTestRun
+          - sf --version
+          - sf plugins --core
+          # Decrypt server key
+          - openssl enc -nosalt -aes-256-cbc -d -in assets/server.key.enc -out assets/server.key -base64 -K $DECRYPTION_KEY -iv $DECRYPTION_IV
+          # Authorize target org
+          - sf org login jwt --username $USER_NAME --jwt-key-file assets/server.key --client-id $CONSUMER_KEY --alias myOrg --set-default
+          # Convert source code to mdapi format
+          - sf project convert source -d mdapi
+          # Deploy to target Salesforce org and run unit tests
+          - sf project deploy start --wait 10 -d mdapi --target-org myOrg --test-level $TESTLEVEL
+
+pipelines:
+  # Pipeline for branches
+  branches:
+    main:
+      - step: *build-test-sonarcloud  # Run SonarCloud analysis
+      - step: *check-quality-gate-sonarcloud  # Check if the quality gate is passed
+      - step: *deploy-to-salesforce  # Deploy to Salesforce org if quality gate passed
+
+  # Custom pipeline, for PRs or other branches
+  pull-requests:
+    '**':
+      - step: *build-test-sonarcloud  # Run SonarCloud analysis for PRs
+      - step: *check-quality-gate-sonarcloud  # Check the quality gate for PRs
+
+  # Custom pipeline for manual deployment (e.g., deployment to DevOps org)
+  custom:
+    deploymentToDevopsDevOrg:
+      - step:
+          script:
+            # Assign variables
+            - export TESTLEVEL=NoTestRun
+            - sf --version
+            - sf plugins --core
+            # Decrypt server key
+            - openssl enc -nosalt -aes-256-cbc -d -in assets/server.key.enc -out assets/server.key -base64 -K $DECRYPTION_KEY -iv $DECRYPTION_IV
+            # Authorize target org
+            - sf org login jwt --username $USER_NAME --jwt-key-file assets/server.key --client-id $CONSUMER_KEY --alias myOrg --set-default
+            # Convert Source code to mdapi format
+            - sf project convert source -d mdapi
+            # Deploy to target deployment org and run unit tests
+            - sf project deploy start --wait 10 -d mdapi --target-org myOrg --test-level $TESTLEVEL
